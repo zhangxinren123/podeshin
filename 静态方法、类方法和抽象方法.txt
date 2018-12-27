@@ -1,0 +1,308 @@
+代码检视是一种可以发现令程序员们头疼的事件的方法。近期检视 OpenStack patches，我发现人们错误地试用了多个 Python 提供给方法的不同的声明（decorator）。所以，我尝试写一些可以在下次代码检视时可以寄给那些伙计的东西。
+
+
+Python中方法的运作
+
+方法是作为类的属性（attribute）存储的函数，你可以以下面的方式声明和获取函数：
+
+>>> class Pizza(object):
+...     def __init__(self, size):
+...         self.size = size
+...     def get_size(self):
+...         return self.size
+...
+>>> Pizza.get_size
+<unbound method Pizza.get_size>
+
+
+
+Python告诉你的是，类Pizza的属性get_size是一个非绑定的方法。
+
+这又指什么呢？很快我们就会知道，试着调用一下：
+
+>>> Pizza.get_size()
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+TypeError: unbound method get_size() must be called with Pizza instance as first argument (got nothing instead)
+
+
+
+这里我们不能调用这个方法是因为它没有被绑定到任一 Pizza 的实例上。一个方法需要一个实例作为它第一个参数（在 Python2 中它必须是对应类的实例；在 Python3 中可以是任何东西）。
+
+我们现在试试：
+
+>>> Pizza.get_size(Pizza(42))
+
+
+
+
+现在可以了！我们试用一个实例作为 get_size 方法的第一个参数调用了它，所以一切变得很美好。
+
+但是你很快会同意，这并不是一个很漂亮的调用方法的方式；因为每次我们想调用这个方法都必须使用到类。并且，如果我们不知道对象是哪个类的实例，这种方式就不方便了。所以，Python 为我们准备的是，它将类 Pizza 的所有的方法绑定到此类的任何实例上。
+
+这意味着类 Pizza 的任意实例的属性 get_size 是一个已绑定的方法：第一个参数是实例本身的方法。
+
+>>> Pizza(42).get_size
+<bound method Pizza.get_size of <__main__.Pizza object at 0x10314b310>>
+>>> Pizza(42).get_size()
+
+
+
+
+如我们预期，现在不需要提供任何参数给 get_size，因为它已经被绑定（bound），它的 self 参数是自动地设为 Pizza 类的实例。
+
+下面是一个更好的证明：
+
+>>> m = Pizza(42).get_size
+>>> m
+<bound method Pizza.get_size of <__main__.Pizza object at 0x10314b350>>
+>>> m()
+
+
+
+
+因此，你甚至不要保存一个对 Pizza 对象的饮用。它的方法已经被绑定在对象上，所以这个方法已经足够。
+
+但是如何知道已绑定的方法被绑定在哪个对象上？技巧如下：
+
+>>> m = Pizza(42).get_size
+>>> m.__self__
+<__main__.Pizza object at 0x10314b390>
+>>> m == m.__self__.get_size
+True
+
+
+易见，我们仍然保存着一个对对象的引用，当需要知道时也可以找到。
+
+在 Python3 中，归属于一个类的函数不再被看成未绑定方法（unbound method），但是作为一个简单的函数，如果要求可以绑定在对象上。所以，在 Python3 中原理是一样的，模型被简化了。
+
+>>> class Pizza(object):
+...     def __init__(self, size):
+...         self.size = size
+...     def get_size(self):
+...         return self.size
+...
+>>> Pizza.get_size
+<function Pizza.get_size at 0x7f307f984dd0>
+
+
+
+
+静态方法
+
+静态方法是一类特殊的方法。有时，我们需要写属于一个类的方法，但是不需要用到对象本身。例如：
+
+class Pizza(object):
+    @staticmethod
+    def mix_ingredients(x, y):
+        return x + y
+
+    def cook(self):
+        return self.mix_ingredients(self.cheese, self.vegetables)
+复制代码
+
+
+这里，将方法 mix_ingredients 作为一个非静态的方法也可以 work，但是给它一个 self 的参数将没有任何作用。
+
+这儿的 decorator@staticmethod 带来一些特别的东西：
+
+>>> Pizza().cook is Pizza().cook
+False
+>>> Pizza().mix_ingredients is Pizza().mix_ingredients
+True
+>>> Pizza().mix_ingredients is Pizza.mix_ingredients
+True
+>>> Pizza()
+<__main__.Pizza object at 0x10314b410>
+>>> Pizza()
+<__main__.Pizza object at 0x10314b510>
+>>>
+复制代码
+
+
+Python 不需要对每个实例化的 Pizza 对象实例化一个绑定的方法。
+
+绑定的方法同样是对象，创建它们需要付出代价。这里的静态方法避免了这样的情况：
+
+降低了阅读代码的难度：看到 @staticmethod 便知道这个方法不依赖与对象本身的状态；
+允许我们在子类中重载mix_ingredients方法。如果我们使用在模块最顶层定义的函数 mix_ingredients，一个继承自 Pizza 的类若不重载 cook，可能不可以改变混合成份（mix_ingredients）的方式。
+
+
+
+类方法
+
+什么是类方法？类方法是绑定在类而非对象上的方法！
+
+>>> class Pizza(object):
+...     radius = 42
+...     @classmethod
+...     def get_radius(cls):
+...         return cls.radius
+... 
+>>> Pizza.get_radius
+<bound method type.get_radius of <class '__main__.Pizza'>>
+>>> Pizza().get_radius
+<bound method type.get_radius of <class '__main__.Pizza'>>
+>>> Pizza.get_radius is Pizza().get_radius
+False
+>>> Pizza.get_radius()
+42
+复制代码
+
+
+不管你如何使用这个方法，它总会被绑定在其归属的类上，同时它第一个参数是类本身（记住：类同样是对象）
+
+何时使用这种方法？类方法一般用于下面两种：
+
+1. 工厂方法，被用来创建一个类的实例，完成一些预处理工作。如果我们使用一个 @staticmethod 静态方法，我们可能需要在函数中硬编码 Pizza 类的名称，使得任何继承自 Pizza 类的类不能使用我们的工厂用作自己的目的。
+
+class Pizza(object):
+    def __init__(self, ingredients):
+        self.ingredients = ingredients
+
+    @classmethod
+    def from_fridge(cls, fridge):
+        return cls(fridge.get_cheese() + fridge.get_vegetables())
+复制代码
+
+
+2. 静态方法调静态方法：如果你将一个静态方法分解为几个静态方法，你不需要硬编码类名但可以使用类方法。使用这种方式来声明我们的方法，Pizza这个名字不需要直接被引用，并且继承和方法重载将会完美运作。
+
+class Pizza(object):
+def __init__(self, radius, height):
+     self.radius = radius
+     self.height = height
+
+@staticmethod
+def compute_circumference(radius):
+      return math.pi * (radius ** 2)
+
+@classmethod
+def compute_volume(cls, height, radius):
+      return height * cls.compute_circumference(radius)
+
+def get_volume(self):
+     return self.compute_volume(self.height, self.radius)
+复制代码
+
+
+
+抽象方法
+
+抽象方法在一个基类中定义，但是可能不会有任何的实现。在 Java 中，这被描述为一个接口的方法。
+
+所以Python中最简单的抽象方法是：
+
+class Pizza(object):
+def get_radius(self):
+     raise NotImplementedError
+复制代码
+
+
+任何继承自 Pizza 的类将实现和重载 get_radius 方法，否则会出现异常。这种独特的实现抽象方法的方式也有其缺点。如果你写一个继承自 Pizza 的类，忘记实现 get_radius，错误将会在你使用这个方法的时候才会出现。
+
+>>> Pizza()
+<__main__.Pizza object at 0x106f381d0>
+>>> Pizza().get_radius()
+Traceback (most recent call last):
+File "<stdin>", line 1, in <module>
+File "<stdin>", line 3, in get_radius
+NotImplementedError
+复制代码
+
+
+有种提前引起错误发生的方法，那就是当对象被实例化时，使用 Python 提供的 abc 模块。
+
+import abc
+class BasePizza(object):
+__metaclass__ = abc.ABCMeta
+
+@abc.abstractmethod
+def get_radius(self):
+     """Method that should do something."""
+复制代码
+
+
+使用 abc 和它的特类，一旦你试着实例化 BasePizza 或者其他继承自它的类，就会得到 TypeError：
+
+>>> BasePizza()
+Traceback (most recent call last):
+File "<stdin>", line 1, in <module>
+TypeError: Can't instantiate abstract class BasePizza with abstract methods get_radius
+复制代码
+
+
+
+混合静态方法、类方法和抽象方法
+
+当我们构建类和继承关系时，终将会碰到要混合这些方法 decorator 的情况。下面提几个 tip。
+
+记住声明一个类为抽象类时，不要冷冻那个方法的 prototype。这是指这个方法必须被实现，不过是可以使用任何参数列表来实现。
+
+import abc
+class BasePizza(object):
+__metaclass__  = abc.ABCMeta
+@abc.abstractmethod
+def get_ingredients(self):
+      """Returns the ingredient list."""
+class Calzone(BasePizza):
+def get_ingredients(self, with_egg=False):
+     egg = Egg() if with_egg else None
+     return self.ingredients + egg
+复制代码
+
+
+这个是合法的，因为 Calzone 完成了为 BasePizza 类对象定义的接口需求。就是说，我们可以把它当作一个类方法或者静态方法来实现，例如：
+
+import abc
+class BasePizza(object):
+__metaclass__  = abc.ABCMeta
+@abc.abstractmethod
+def get_ingredients(self):
+      """Returns the ingredient list."""
+
+class DietPizza(BasePizza):
+@staticmethod
+def get_ingredients():
+     return None
+复制代码
+
+
+这样做同样争取，并且完成了与 BasePizza 抽象类达成一致的需求。get_ingredients 方法不需要知道对象，这是实现的细节，而非完成需求的评价指标。
+
+因此，你不能强迫抽象方法的实现是正常的方法、类方法或者静态方法，并且可以这样说，你不能。从 Python3 开始（这就不会像在 Python2 中那样 work 了，见 issue5867），现在可以在 @abstractmethod 之上使用 @staticmethod 和 @classmethod 了。
+
+import abc
+class BasePizza(object):
+__metaclass__  = abc.ABCMeta
+
+ingredient = ['cheese']
+
+@classmethod
+@abc.abstractmethod
+def get_ingredients(cls):
+      """Returns the ingredient list."""
+      return cls.ingredients
+
+
+
+不要误解：如果你认为这是强迫你的子类将 get_ingredients 实现为一个类方法，那就错了。这个是表示你实现的 get_ingredients 在 BasePizza 类中是类方法而已。
+
+在一个抽象方法的实现？是的！在 Python 中，对比与 Java 接口，你可以在抽象方法中写代码，并且使用 super() 调用：
+
+import abc
+class BasePizza(object):
+__metaclass__  = abc.ABCMeta
+default_ingredients = ['cheese']
+@classmethod
+@abc.abstractmethod
+def get_ingredients(cls):
+      """Returns the ingredient list."""
+      return cls.default_ingredients
+class DietPizza(BasePizza):
+def get_ingredients(self):
+     return ['egg'] + super(DietPizza, self).get_ingredients()
+复制代码
+
+
+现在，每个你从 BasePizza 类继承而来的 pizza 类将重载 get_ingredients 方法，但是可以使用默认机制来使用 super() 获得 ingredient 列表。
